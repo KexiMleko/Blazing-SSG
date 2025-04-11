@@ -1,10 +1,12 @@
+use component::ComponentBl;
 use std::{
     env,
     fs::{self, DirEntry, File},
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 use tl::parse;
+mod component;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -56,8 +58,15 @@ fn main() {
 fn build() -> std::io::Result<()> {
     println!("Build started!");
     let current_dir = env::current_dir()?;
-    visit_dirs(&current_dir.join("pages"), &get_page)?;
-    visit_dirs(&current_dir.join("components"), &perform_extension_action)?;
+    let mut component_list: Vec<ComponentBl> = Vec::new();
+    get_files(
+        &current_dir.join("components"),
+        &get_component,
+        &mut component_list,
+        "js",
+    )?;
+
+    //get_files(&current_dir.join("pages"), &get_page, &mut componentList)?;
     Ok(())
 }
 fn create_component(component_name: String) -> std::io::Result<()> {
@@ -127,15 +136,24 @@ fn create_project(project_name: String) -> std::io::Result<()> {
 
     return Ok(());
 }
-fn visit_dirs(dir: &Path, cb: &dyn Fn(&DirEntry)->std::io::Result<()>) -> io::Result<()> {
+fn get_files<T>(
+    dir: &Path,
+    cb: &dyn Fn(&DirEntry) -> std::io::Result<T>,
+    data_box: &mut Vec<T>,
+    extension: &str,
+) -> io::Result<()> {
     if dir.is_dir() {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                visit_dirs(&path, cb)?;
+                get_files(&path, cb, data_box, extension)?;
             } else {
-                cb(&entry)?;
+                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                    if ext == extension {
+                        data_box.push(cb(&entry)?);
+                    }
+                }
             }
         }
     }
@@ -153,14 +171,30 @@ fn get_page(entry: &DirEntry) -> std::io::Result<()> {
     }
     return Ok(());
 }
-fn perform_extension_action(entry: &DirEntry) ->std::io::Result<()>{
-    if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-        match ext {
-            "js" => {}
-            "html" => {}
-            "css" => {}
-            _ => {}
+fn get_component(entry: &DirEntry) -> std::io::Result<ComponentBl> {
+    let js = fs::read_to_string(entry.path())?;
+    let component = ComponentBl {
+        selector: "my-component".to_string(),
+        class_name: "MyComponent".to_string(),
+        html_path: PathBuf::from("components/my_component.html"),
+        js_path: PathBuf::from("components/my_component.js"),
+        css_paths: [PathBuf::from("components/my_component.css")].to_vec(),
+    };
+    let decorator: String = extract_decorator(&js).expect("Failed to extract decorator!");
+    println!("decorators {}", decorator);
+    return Ok(component);
+}
+fn extract_decorator(source: &str) -> Option<String> {
+    let decorator_end_index = source
+        .find("@Component")
+        .expect("failed finding component decorator!")
+        + 11 as usize;
+    let mut decorator: Vec<char> = Vec::new();
+    for char in source.chars().skip(decorator_end_index) {
+        if char == ')' {
+            break;
         }
+        decorator.push(char);
     }
-    return Ok(());
+    return Some(decorator.iter().collect());
 }
