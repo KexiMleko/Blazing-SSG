@@ -1,9 +1,10 @@
 use component::ComponentBl;
 use std::{
-    env,
+    env::{self, JoinPathsError},
     fs::{self, DirEntry, File},
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
+    result,
 };
 use tl::parse;
 mod component;
@@ -58,6 +59,12 @@ fn main() {
 fn build() -> std::io::Result<()> {
     println!("Build started!");
     let current_dir = env::current_dir()?;
+    if !current_dir.join("blazing-config.json").exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Blazing config not found inside this directory!",
+        ));
+    }
     let mut component_list: Vec<ComponentBl> = Vec::new();
     get_files(
         &current_dir.join("components"),
@@ -173,28 +180,93 @@ fn get_page(entry: &DirEntry) -> std::io::Result<()> {
 }
 fn get_component(entry: &DirEntry) -> std::io::Result<ComponentBl> {
     let js = fs::read_to_string(entry.path())?;
-    let component = ComponentBl {
-        selector: "my-component".to_string(),
-        class_name: "MyComponent".to_string(),
-        html_path: PathBuf::from("components/my_component.html"),
-        js_path: PathBuf::from("components/my_component.js"),
-        css_paths: [PathBuf::from("components/my_component.css")].to_vec(),
-    };
+    let mut base_path = entry.path();
+    base_path.pop();
+
     let decorator: String = extract_decorator(&js).expect("Failed to extract decorator!");
-    println!("decorators {}", decorator);
+    let mut elements = decorator.split([':', '\n', '\r']);
+    let mut selector: String = String::new();
+    let mut template_url: PathBuf = PathBuf::new();
+    let mut style_urls: Vec<PathBuf> = Vec::new();
+
+    while let Some(prop) = elements.next() {
+        if prop.is_empty() {
+            continue;
+        }
+        match prop.trim() {
+            "selector" => {
+                if let Some(path) = elements.next() {
+                    selector = clean(path);
+                }
+            }
+            "templateUrl" => {
+                if let Some(path) = elements.next() {
+                    template_url = normalize_dir(base_path.join(clean(path)));
+                }
+            }
+            "styleUrls" => {
+                if let Some(path) = elements.next() {
+                    let path = path.trim();
+                    if path.starts_with('[') && path.ends_with(']') {
+                        for url in path[1..path.len() - 1].split(',') {
+                            style_urls.push(normalize_dir(base_path.join(clean(url))));
+                            // println!("styles: {}",normalize_dir(entry.path().join(clean(path))).display())
+                        }
+                    } else {
+                        style_urls.push(normalize_dir(entry.path().join(clean(path))));
+                    }
+                }
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "Found invalid component decorator property - {} - \nThe only valid ones are 'selector', 'templateUrl' and 'styleUrls'",
+                        prop.trim()
+                    ),
+                ));
+            }
+        }
+    }
+    let component = ComponentBl {
+        selector: selector,
+        class_name: "not yet extracted".to_string(),
+        html_path: template_url,
+        js_path: entry.path(),
+        css_paths: style_urls,
+    };
+    println!("{}\n\n\n\n", component.to_string());
     return Ok(component);
 }
 fn extract_decorator(source: &str) -> Option<String> {
     let decorator_end_index = source
         .find("@Component")
         .expect("failed finding component decorator!")
-        + 11 as usize;
+        + 12 as usize;
     let mut decorator: Vec<char> = Vec::new();
     for char in source.chars().skip(decorator_end_index) {
-        if char == ')' {
+        if char == '}' {
             break;
         }
         decorator.push(char);
     }
     return Some(decorator.iter().collect());
+}
+fn clean(val: &str) -> String {
+    val.replace(['"', '\'', ',', ' ', '\t', '\n'], "")
+}
+fn normalize_dir(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => {
+                normalized.push(other);
+            }
+        }
+    }
+    return normalized;
 }
